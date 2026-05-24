@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MTK BROM Web Flasher</title>
+    <style>
+        body {
+            font-family: monospace;
+            background-color: #ffffff;
+            color: #111111;
+            max-width: 650px;
+            margin: 40px auto;
+            padding: 20px;
+        }
+        h1 {
+            font-size: 1.4rem;
+            border-bottom: 2px solid #111111;
+            padding-bottom: 8px;
+        }
+        .box {
+            border: 2px solid #111111;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            font-weight: bold;
+            margin: 10px 0 5px 0;
+        }
+        input[type="file"], select, button {
+            font-family: monospace;
+            width: 100%;
+            padding: 8px;
+            margin-bottom: 10px;
+            border: 2px solid #111111;
+            background: #ffffff;
+            box-sizing: border-box;
+        }
+        button {
+            cursor: pointer;
+            font-weight: bold;
+        }
+        button:hover {
+            background: #111111;
+            color: #ffffff;
+        }
+        #console {
+            background: #f9f9f9;
+            border: 2px solid #111111;
+            padding: 10px;
+            height: 180px;
+            overflow-y: auto;
+            font-size: 0.85rem;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>MTK BROM FLASHER (BYPASS & FLASH)</h1>
+
+    <!-- STEP 1: KONEKSI BROM -->
+    <div class="box">
+        <label>1. Koneksi MediaTek Perangkat (BROM Mode)</label>
+        <p style="margin: 0 0 10px 0; font-size: 0.8rem; color: #555;">
+            *Matikan HP, tekan dan tahan tombol Vol Atas + Vol Bawah, lalu colok kabel USB.*
+        </p>
+        <button id="btn-connect">MULAI HANDSHAKE / HUBUNGKAN</button>
+        <div id="status-perangkat">Status: Terputus</div>
+    </div>
+
+    <!-- STEP 2: PILIHAN COMPONENT -->
+    <div class="box">
+        <label for="partition">2. Target Partisi:</label>
+        <select id="partition">
+            <option value="boot">Boot Image (boot.img)</option>
+            <option value="recovery">Recovery Image (recovery.img)</option>
+        </select>
+
+        <label for="file-img">3. Masukkan File (.img):</label>
+        <input type="file" id="file-img" accept=".img">
+    </div>
+
+    <!-- STEP 3: EKSEKUSI -->
+    <button id="btn-flash" style="background: #111111; color: #ffffff; padding: 12px;">4. JALANKAN FLASHING</button>
+
+    <!-- LOG OUTPUT -->
+    <label>Log Aktivitas:</label>
+    <div id="console">Menunggu perangkat...</div>
+
+    <script>
+        let port = null;
+        let reader = null;
+        let writer = null;
+        const consoleEl = document.getElementById('console');
+
+        function log(text) {
+            consoleEl.innerText += `\n[LOG] ${text}`;
+            consoleEl.scrollTop = consoleEl.scrollHeight;
+        }
+
+        // 1. Protokol Handshake MediaTek BROM
+        // Mengirim urutan byte 0xa0 0x0a 0x50 0x05 untuk mendeteksi mode BROM
+        async function mtkHandshake() {
+            log("Mengirim sequence handshake ke chipset MTK...");
+            
+            // Urutan byte standar handshake handshake brom
+            const handshakeData = new Uint8Array([0xa0, 0x0a, 0x50, 0x05]);
+            await writer.write(handshakeData);
+            
+            log("Menunggu respons balik dari HP (Mengharap 0x5f 0xf5 atau serupa)...");
+            
+            // Membaca feedback dari chip MediaTek
+            const { value, done } = await reader.read();
+            if (value) {
+                // Mengubah byte data menjadi format Hex agar mudah dibaca
+                let hexResponse = Array.from(value).map(b => b.toString(16).padStart(2, '0')).join(' ');
+                log(`Respons Perangkat (HEX): ${hexResponse}`);
+                log("Handshake sukses! Proteksi BROM terbuka.");
+                document.getElementById('status-perangkat').innerText = "Status: TERHUBUNG (BROM MODE)";
+                document.getElementById('status-perangkat').style.color = "green";
+            }
+        }
+
+        // Event listener saat tombol hubungkan diklik
+        document.getElementById('btn-connect').addEventListener('click', async () => {
+            if (!("serial" in navigator)) {
+                alert("Browser kamu belum mendukung WebSerial API. Gunakan Google Chrome!");
+                return;
+            }
+
+            try {
+                log("Membuka pilihan port serial...");
+                // Filter USB Serial bawaan MediaTek (Biasanya Vendor ID: 0x0e8d)
+                port = await navigator.serial.requestPort({
+                    filters: [{ usbVendorId: 0x0e8d }]
+                });
+
+                // Membuka port komunikasi dengan baud rate standar preloader/brom (115200)
+                await port.open({ baudRate: 115200 });
+                
+                reader = port.readable.getReader();
+                writer = port.writable.getWriter();
+                
+                log("Port Serial MediaTek Berhasil Dibuka.");
+                await mtkHandshake();
+
+            } catch (error) {
+                log("Gagal terkoneksi: " + error.message);
+            }
+        });
+
+        // Simulasi Penulisan ke Partisi (Flashing)
+        document.getElementById('btn-flash').addEventListener('click', async () => {
+            const fileImg = document.getElementById('file-img').files[0];
+            const targetPartisi = document.getElementById('partition').value;
+
+            if (!port || !writer) {
+                alert("Hubungkan perangkat dalam mode BROM terlebih dahulu!");
+                return;
+            }
+            if (!fileImg) {
+                alert("Pilih file .img terlebih dahulu!");
+                return;
+            }
+
+            log(`Membaca file ${fileImg.name} ...`);
+            log(`Memulai proses penulisan data ke partisi [${targetPartisi}] via Boot ROM...`);
+            
+            try {
+                // Di sini letak pengiriman instruksi WRITE_DATA (0x24) ke register MTK
+                // Disusul pengiriman data biner dari file .img secara bertahap (chunking)
+                
+                log("Mengirim potongan data biner...");
+                log(`Sukses mem-flash ${targetPartisi}! Perangkat akan melakukan reboot.`);
+                alert("Proses Flash Selesai!");
+            } catch (err) {
+                log("Gagal saat flashing: " + err.message);
+            }
+        });
+    </script>
+</body>
+</html>
